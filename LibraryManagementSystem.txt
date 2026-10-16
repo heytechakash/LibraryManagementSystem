@@ -1,0 +1,294 @@
+import java.io.*;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+
+/**
+ * Library Management System (console based)
+ * Features: add/remove books, register members, search, issue, return,
+ * fine calculation, and automatic saving to a file.
+ * Concepts used: OOP, collections, exception handling, file I/O, java.time.
+ */
+public class LibraryManagementSystem {
+
+    // ---------- MODEL CLASSES ----------
+
+    static class Book implements Serializable {
+        private static final long serialVersionUID = 1L;
+        private final int id;
+        private String title;
+        private String author;
+        private boolean available = true;
+        private int issuedToMemberId = -1;
+        private LocalDate dueDate;
+
+        Book(int id, String title, String author) {
+            this.id = id;
+            this.title = title;
+            this.author = author;
+        }
+
+        int getId() { return id; }
+        String getTitle() { return title; }
+        String getAuthor() { return author; }
+        boolean isAvailable() { return available; }
+        int getIssuedToMemberId() { return issuedToMemberId; }
+        LocalDate getDueDate() { return dueDate; }
+
+        void issue(int memberId, LocalDate due) {
+            available = false;
+            issuedToMemberId = memberId;
+            dueDate = due;
+        }
+
+        void giveBack() {
+            available = true;
+            issuedToMemberId = -1;
+            dueDate = null;
+        }
+
+        @Override
+        public String toString() {
+            String status = available ? "Available" : "Issued to member #" + issuedToMemberId + " (due " + dueDate + ")";
+            return String.format("[%d] %-30s by %-20s | %s", id, title, author, status);
+        }
+    }
+
+    static class Member implements Serializable {
+        private static final long serialVersionUID = 1L;
+        private final int id;
+        private String name;
+        private final List<Integer> borrowedBookIds = new ArrayList<>();
+
+        Member(int id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        int getId() { return id; }
+        String getName() { return name; }
+        List<Integer> getBorrowedBookIds() { return borrowedBookIds; }
+
+        @Override
+        public String toString() {
+            return String.format("[%d] %-20s | Books borrowed: %d", id, name, borrowedBookIds.size());
+        }
+    }
+
+    // ---------- LIBRARY (BUSINESS LOGIC) ----------
+
+    static class Library implements Serializable {
+        private static final long serialVersionUID = 1L;
+        static final int LOAN_DAYS = 14;
+        static final int MAX_BOOKS_PER_MEMBER = 3;
+        static final double FINE_PER_DAY = 2.0; // Rs. per day
+
+        private final Map<Integer, Book> books = new LinkedHashMap<>();
+        private final Map<Integer, Member> members = new LinkedHashMap<>();
+        private int nextBookId = 1;
+        private int nextMemberId = 1;
+
+        Book addBook(String title, String author) {
+            Book b = new Book(nextBookId++, title, author);
+            books.put(b.getId(), b);
+            return b;
+        }
+
+        void removeBook(int bookId) {
+            Book b = books.get(bookId);
+            if (b == null) throw new IllegalArgumentException("Book not found.");
+            if (!b.isAvailable()) throw new IllegalStateException("Cannot remove a book that is currently issued.");
+            books.remove(bookId);
+        }
+
+        Member addMember(String name) {
+            Member m = new Member(nextMemberId++, name);
+            members.put(m.getId(), m);
+            return m;
+        }
+
+        List<Book> searchBooks(String keyword) {
+            String k = keyword.toLowerCase();
+            List<Book> result = new ArrayList<>();
+            for (Book b : books.values()) {
+                if (b.getTitle().toLowerCase().contains(k) || b.getAuthor().toLowerCase().contains(k)) {
+                    result.add(b);
+                }
+            }
+            return result;
+        }
+
+        void issueBook(int bookId, int memberId) {
+            Book b = books.get(bookId);
+            Member m = members.get(memberId);
+            if (b == null) throw new IllegalArgumentException("Book not found.");
+            if (m == null) throw new IllegalArgumentException("Member not found.");
+            if (!b.isAvailable()) throw new IllegalStateException("Book is already issued.");
+            if (m.getBorrowedBookIds().size() >= MAX_BOOKS_PER_MEMBER)
+                throw new IllegalStateException("Member has reached the limit of " + MAX_BOOKS_PER_MEMBER + " books.");
+
+            b.issue(memberId, LocalDate.now().plusDays(LOAN_DAYS));
+            m.getBorrowedBookIds().add(bookId);
+        }
+
+        /** Returns the fine amount (0 if returned on time). */
+        double returnBook(int bookId) {
+            Book b = books.get(bookId);
+            if (b == null) throw new IllegalArgumentException("Book not found.");
+            if (b.isAvailable()) throw new IllegalStateException("This book was not issued.");
+
+            long lateDays = ChronoUnit.DAYS.between(b.getDueDate(), LocalDate.now());
+            double fine = lateDays > 0 ? lateDays * FINE_PER_DAY : 0;
+
+            Member m = members.get(b.getIssuedToMemberId());
+            if (m != null) m.getBorrowedBookIds().remove(Integer.valueOf(bookId));
+            b.giveBack();
+            return fine;
+        }
+
+        Collection<Book> getAllBooks() { return books.values(); }
+        Collection<Member> getAllMembers() { return members.values(); }
+        Member getMember(int id) { return members.get(id); }
+        Book getBook(int id) { return books.get(id); }
+    }
+
+    // ---------- FILE STORAGE ----------
+
+    private static final String DATA_FILE = "library.dat";
+
+    static Library loadLibrary() {
+        File f = new File(DATA_FILE);
+        if (f.exists()) {
+            try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(f))) {
+                return (Library) in.readObject();
+            } catch (IOException | ClassNotFoundException e) {
+                System.out.println("Could not load saved data. Starting fresh. (" + e.getMessage() + ")");
+            }
+        }
+        return new Library();
+    }
+
+    static void saveLibrary(Library lib) {
+        try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(DATA_FILE))) {
+            out.writeObject(lib);
+        } catch (IOException e) {
+            System.out.println("Error saving data: " + e.getMessage());
+        }
+    }
+
+    // ---------- CONSOLE MENU ----------
+
+    private static final Scanner sc = new Scanner(System.in);
+
+    static int readInt(String prompt) {
+        while (true) {
+            System.out.print(prompt);
+            try {
+                return Integer.parseInt(sc.nextLine().trim());
+            } catch (NumberFormatException e) {
+                System.out.println("Please enter a valid number.");
+            }
+        }
+    }
+
+    static String readText(String prompt) {
+        while (true) {
+            System.out.print(prompt);
+            String s = sc.nextLine().trim();
+            if (!s.isEmpty()) return s;
+            System.out.println("Input cannot be empty.");
+        }
+    }
+
+    static void printMenu() {
+        System.out.println("\n===== LIBRARY MANAGEMENT SYSTEM =====");
+        System.out.println("1. Add Book");
+        System.out.println("2. Remove Book");
+        System.out.println("3. View All Books");
+        System.out.println("4. Search Books");
+        System.out.println("5. Register Member");
+        System.out.println("6. View All Members");
+        System.out.println("7. Issue Book");
+        System.out.println("8. Return Book");
+        System.out.println("9. View Member's Borrowed Books");
+        System.out.println("0. Save & Exit");
+    }
+
+    public static void main(String[] args) {
+        Library lib = loadLibrary();
+        boolean running = true;
+
+        while (running) {
+            printMenu();
+            int choice = readInt("Enter choice: ");
+            try {
+                switch (choice) {
+                    case 1: {
+                        String title = readText("Title: ");
+                        String author = readText("Author: ");
+                        Book b = lib.addBook(title, author);
+                        System.out.println("Book added with ID " + b.getId());
+                        break;
+                    }
+                    case 2:
+                        lib.removeBook(readInt("Book ID to remove: "));
+                        System.out.println("Book removed.");
+                        break;
+                    case 3:
+                        if (lib.getAllBooks().isEmpty()) System.out.println("No books in the library.");
+                        for (Book b : lib.getAllBooks()) System.out.println(b);
+                        break;
+                    case 4: {
+                        List<Book> found = lib.searchBooks(readText("Search by title/author: "));
+                        if (found.isEmpty()) System.out.println("No matching books.");
+                        for (Book b : found) System.out.println(b);
+                        break;
+                    }
+                    case 5: {
+                        Member m = lib.addMember(readText("Member name: "));
+                        System.out.println("Member registered with ID " + m.getId());
+                        break;
+                    }
+                    case 6:
+                        if (lib.getAllMembers().isEmpty()) System.out.println("No members registered.");
+                        for (Member m : lib.getAllMembers()) System.out.println(m);
+                        break;
+                    case 7: {
+                        int bookId = readInt("Book ID: ");
+                        int memberId = readInt("Member ID: ");
+                        lib.issueBook(bookId, memberId);
+                        System.out.println("Book issued. Due in " + Library.LOAN_DAYS + " days.");
+                        break;
+                    }
+                    case 8: {
+                        double fine = lib.returnBook(readInt("Book ID: "));
+                        System.out.println("Book returned.");
+                        if (fine > 0) System.out.printf("Late return! Fine: Rs. %.2f%n", fine);
+                        break;
+                    }
+                    case 9: {
+                        Member m = lib.getMember(readInt("Member ID: "));
+                        if (m == null) {
+                            System.out.println("Member not found.");
+                        } else if (m.getBorrowedBookIds().isEmpty()) {
+                            System.out.println(m.getName() + " has no borrowed books.");
+                        } else {
+                            System.out.println("Books borrowed by " + m.getName() + ":");
+                            for (int id : m.getBorrowedBookIds()) System.out.println(lib.getBook(id));
+                        }
+                        break;
+                    }
+                    case 0:
+                        running = false;
+                        break;
+                    default:
+                        System.out.println("Invalid choice. Try again.");
+                }
+            } catch (IllegalArgumentException | IllegalStateException e) {
+                System.out.println("Error: " + e.getMessage());
+            }
+            saveLibrary(lib); // auto-save after every action
+        }
+        System.out.println("Data saved. Goodbye!");
+    }
+}
